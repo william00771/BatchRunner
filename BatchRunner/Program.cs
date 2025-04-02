@@ -1,20 +1,10 @@
 ﻿using System.Diagnostics;
-using Microsoft.Data.SqlClient;
-public record AppTask(string Path, string Arguments, int? Interval);
+using BatchRunner.Models;
+using BatchRunner.Services;
+using BatchRunner.Util;
 
-public abstract record SqlStep;
-public record RunSqlCommand(string Command) : SqlStep;
-
-public record JobAppTask(
-    string Path,
-    string Arguments,
-    int? Interval,
-    string? ConnectionString,
-    List<SqlStep> Steps
-) : AppTask(Path, Arguments, Interval);
 class Program
 {
-    static string LogFilePath => Path.Combine(AppContext.BaseDirectory, "BatchRunner.log");
     static List<Process> RunningProcesses = new();
 
     static async Task Main(string[] args)
@@ -22,7 +12,7 @@ class Program
         Console.CancelKeyPress += (sender, e) =>
         {
             e.Cancel = true;
-            Console.WriteLine("CTRL+C received. Terminating all child processes...");
+            Logger.Log("CTRL+C received. Terminating all child processes...");
             lock (RunningProcesses)
             {
                 foreach (var p in RunningProcesses)
@@ -32,12 +22,12 @@ class Program
                         if (!p.HasExited)
                         {
                             p.Kill(true);
-                            Console.WriteLine($"Killed {Path.GetFileName(p.StartInfo.FileName)}");
+                            Logger.Log($"Killed {Path.GetFileName(p.StartInfo.FileName)}");
                         }
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error killing process: {ex.Message}");
+                        Logger.Log($"Error killing process: {ex.Message}");
                     }
                 }
             }
@@ -50,7 +40,7 @@ class Program
             _ = Task.Run(() => RunAppLoop(app));
         }
 
-        Console.WriteLine("All apps started.");
+        Logger.Log("All apps started.");
         await Task.Delay(-1);
     }
 
@@ -90,12 +80,14 @@ class Program
                         continue;
                     }
                 }
+
                 if (current == "-ConnectionString" && i + 1 < args.Length)
                 {
                     conn = args[++i];
                     i++;
                     continue;
                 }
+
                 if (current == "-RunSqlCommand" && i + 1 < args.Length)
                 {
                     steps.Add(new RunSqlCommand(args[++i]));
@@ -122,12 +114,12 @@ class Program
 
     static async Task RunAppLoop(AppTask app)
     {
-        string exeNameWithArgs = $"{Path.GetFileName(app.Path)} {app.Arguments}".Trim();
+        string exeName = Path.GetFileName(app.Path);
+        string exeNameWithArgs = $"{exeName} {app.Arguments}".Trim();
 
         do
         {
-            string startTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            LogToConsoleAndFile($"[{startTime}] STARTING {exeNameWithArgs}");
+            Logger.Log($"STARTING {exeNameWithArgs}");
 
             try
             {
@@ -153,13 +145,13 @@ class Program
                 process.OutputDataReceived += (s, e) =>
                 {
                     if (!string.IsNullOrWhiteSpace(e.Data))
-                        LogToConsoleAndFile($"[OUTPUT] {exeNameWithArgs}: {e.Data}");
+                        Logger.Log($"[OUTPUT] {exeNameWithArgs}: {e.Data}");
                 };
 
                 process.ErrorDataReceived += (s, e) =>
                 {
                     if (!string.IsNullOrWhiteSpace(e.Data))
-                        LogToConsoleAndFile($"[STDERR] {exeNameWithArgs}: {e.Data}");
+                        Logger.Log($"[STDERR] {exeNameWithArgs}: {e.Data}");
                 };
 
                 process.Start();
@@ -172,92 +164,37 @@ class Program
                     RunningProcesses.Remove(process);
                 }
 
-                string endTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                LogToConsoleAndFile($"[{endTime}] FINISHED {exeNameWithArgs} with exit code {process.ExitCode}");
+                Logger.Log($"FINISHED {exeNameWithArgs} with exit code {process.ExitCode}");
 
                 if (process.ExitCode != 0)
-                    LogToConsoleAndFile($"[{endTime}] Non-zero exit code: {process.ExitCode}");
+                    Logger.Log($"Non-zero exit code: {process.ExitCode}");
 
                 if (app is JobAppTask jobApp)
                 {
                     var jobExecutor = new SqlJobExecutor(jobApp.ConnectionString!);
-                    string exeTag = $"{Path.GetFileName(app.Path)}";
 
                     foreach (var step in jobApp.Steps)
                     {
-                        switch (step)
+                        if (step is RunSqlCommand sql)
                         {
-                            case RunSqlCommand sql:
-                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Executing SQL command: {exeTag} {sql.Command}");
-                                await jobExecutor.ExecuteSqlCommandAsync(sql.Command);
-                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] SQL command executed successfully: {exeTag} ");
-                                break;
+                            Logger.Log($"Executing SQL command {exeName}: {sql.Command}");
+                            await jobExecutor.ExecuteSqlCommandAsync(sql.Command);
+                            Logger.Log($"SQL command executed successfully {exeName}");
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                string errTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                LogToConsoleAndFile($"[{errTime}] EXCEPTION while running {exeNameWithArgs}: {ex}");
+                Logger.Log($"EXCEPTION while running {exeNameWithArgs}: {ex}");
             }
 
             if (app.Interval.HasValue)
             {
-                string waitTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                LogToConsoleAndFile($"[{waitTime}] Waiting {app.Interval.Value} minute(s) before next run of {exeNameWithArgs}");
+                Logger.Log($"Waiting {app.Interval.Value} minute(s) before next run of {exeNameWithArgs}");
                 await Task.Delay(TimeSpan.FromMinutes(app.Interval.Value));
             }
 
         } while (app.Interval.HasValue);
-    }
-
-    public static void LogToConsoleAndFile(string message)
-    {
-        Console.WriteLine(message);
-        try
-        {
-            File.AppendAllText(LogFilePath, message + Environment.NewLine);
-        }
-        catch
-        {
-            Console.WriteLine("Failed to write to log file.");
-        }
-    }
-}
-class SqlJobExecutor
-{
-    private readonly string _connectionString;
-    public SqlJobExecutor(string connectionString)
-    {
-        _connectionString = connectionString;
-    }
-
-    public async Task ExecuteSqlCommandAsync(string commandText)
-    {
-        using var connection = new SqlConnection(_connectionString);
-        try
-        {
-            await connection.OpenAsync();
-            using var cmd = new SqlCommand(commandText, connection);
-            await cmd.ExecuteNonQueryAsync();
-        }
-        catch (SqlException sqlEx)
-        {
-            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            Program.LogToConsoleAndFile($"[{timestamp}] SQL ERROR executing: {commandText}");
-            foreach (SqlError error in sqlEx.Errors)
-            {
-                Program.LogToConsoleAndFile($"[{timestamp}] SQL ERROR {error.Number}: {error.Message}");
-            }
-            throw;
-        }
-        catch (Exception ex)
-        {
-            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            Program.LogToConsoleAndFile($"[{timestamp}] GENERAL ERROR executing SQL command: {commandText}");
-            Program.LogToConsoleAndFile($"[{timestamp}] Exception: {ex.Message}");
-            throw;
-        }
     }
 }
