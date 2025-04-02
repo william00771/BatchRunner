@@ -1,8 +1,20 @@
 ﻿using System.Diagnostics;
+using Microsoft.Data.SqlClient;
+
+public record AppTask(string Path, string Arguments, int? Interval);
+
+public record JobAppTask(
+    string Path,
+    string Arguments,
+    int? Interval,
+    string? ConnectionString,
+    string? PreQuery,
+    string? SqlStoredProcedure,
+    string? SqlCommandAfter
+) : AppTask(Path, Arguments, Interval);
 
 class Program
 {
-    record AppTask(string Path, string Arguments, int? Interval);
     static string LogFilePath => Path.Combine(AppContext.BaseDirectory, "BatchRunner.log");
     static List<Process> RunningProcesses = new List<Process>();
 
@@ -63,22 +75,56 @@ class Program
 
             var argList = new List<string>();
             int? interval = null;
+            string? conn = null, pre = null, storedProc = null, post = null;
 
             while (i < args.Length && !args[i].EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             {
-                if (args[i].StartsWith("-Interval", StringComparison.OrdinalIgnoreCase))
+                string current = args[i];
+
+                if (current.StartsWith("-Interval", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (int.TryParse(args[i].Replace("-Interval", ""), out int val))
+                    if (int.TryParse(current.Replace("-Interval", ""), out int val))
                         interval = val;
                     i++;
-                    break;
+                    continue;
+                }
+                if (current == "-RunStoredProcedure" && i + 1 < args.Length)
+                {
+                    storedProc = args[++i];
+                    i++;
+                    continue;
+                }
+                if (current == "-ConnectionString" && i + 1 < args.Length)
+                {
+                    conn = args[++i];
+                    i++;
+                    continue;
+                }
+                if (current == "-Pre" && i + 1 < args.Length)
+                {
+                    pre = args[++i];
+                    i++;
+                    continue;
+                }
+                if (current == "-RunSqlCommand" && i + 1 < args.Length)
+                {
+                    post = args[++i];
+                    i++;
+                    continue;
                 }
 
-                argList.Add(args[i]);
+                argList.Add(current);
                 i++;
             }
 
-            list.Add(new AppTask(path, string.Join(" ", argList), interval));
+            if (!string.IsNullOrEmpty(storedProc) && !string.IsNullOrEmpty(conn))
+            {
+                list.Add(new JobAppTask(path, string.Join(" ", argList), interval, conn, pre, storedProc, post));
+            }
+            else
+            {
+                list.Add(new AppTask(path, string.Join(" ", argList), interval));
+            }
         }
 
         return list;
@@ -141,6 +187,14 @@ class Program
 
                 if (process.ExitCode != 0)
                     LogToConsoleAndFile($"[{endTime}] Non-zero exit code: {process.ExitCode}");
+
+                if (app is JobAppTask jobApp)
+                {
+                    LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Executing stored procedure: {jobApp.SqlStoredProcedure}");
+                    var jobExecutor = new SqlJobExecutor(jobApp.ConnectionString!);
+                    await jobExecutor.ExecuteJobAsync(jobApp.PreQuery, jobApp.SqlStoredProcedure!, jobApp.SqlCommandAfter);
+                    LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Stored procedure {jobApp.SqlStoredProcedure} completed.");
+                }
             }
             catch (Exception ex)
             {
@@ -169,5 +223,44 @@ class Program
         {
             Console.WriteLine("Failed to write to log file.");
         }
+    }
+}
+
+class SqlJobExecutor
+{
+    private readonly string _connectionString;
+    public SqlJobExecutor(string connectionString)
+    {
+        _connectionString = connectionString;
+    }
+
+    public async Task ExecuteJobAsync(string? preQuery, string jobName, string? postQuery)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+
+        if (!string.IsNullOrEmpty(preQuery))
+            await new SqlCommand(preQuery, connection).ExecuteNonQueryAsync();
+
+        var startJobCmd = new SqlCommand("EXEC msdb.dbo.sp_start_job @job_name", connection);
+        startJobCmd.Parameters.AddWithValue("@job_name", jobName);
+        await startJobCmd.ExecuteNonQueryAsync();
+
+        bool running;
+        do
+        {
+            await Task.Delay(3000);
+            var checkJobCmd = new SqlCommand(@"
+                SELECT COUNT(*) 
+                FROM msdb.dbo.sysjobactivity a 
+                JOIN msdb.dbo.sysjobs b ON a.job_id = b.job_id 
+                WHERE b.name = @job_name AND stop_execution_date IS NULL", connection);
+            checkJobCmd.Parameters.AddWithValue("@job_name", jobName);
+
+            running = (int)await checkJobCmd.ExecuteScalarAsync() > 0;
+        } while (running);
+
+        if (!string.IsNullOrEmpty(postQuery))
+            await new SqlCommand(postQuery, connection).ExecuteNonQueryAsync();
     }
 }
