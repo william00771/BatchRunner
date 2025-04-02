@@ -1,22 +1,22 @@
 ﻿using System.Diagnostics;
 using Microsoft.Data.SqlClient;
-
 public record AppTask(string Path, string Arguments, int? Interval);
+
+public abstract record SqlStep;
+public record RunStoredProcedure(string Name) : SqlStep;
+public record RunSqlCommand(string Command) : SqlStep;
 
 public record JobAppTask(
     string Path,
     string Arguments,
     int? Interval,
     string? ConnectionString,
-    string? PreQuery,
-    string? SqlStoredProcedure,
-    string? SqlCommandAfter
+    List<SqlStep> Steps
 ) : AppTask(Path, Arguments, Interval);
-
 class Program
 {
     static string LogFilePath => Path.Combine(AppContext.BaseDirectory, "BatchRunner.log");
-    static List<Process> RunningProcesses = new List<Process>();
+    static List<Process> RunningProcesses = new();
 
     static async Task Main(string[] args)
     {
@@ -24,7 +24,6 @@ class Program
         {
             e.Cancel = true;
             Console.WriteLine("CTRL+C received. Terminating all child processes...");
-
             lock (RunningProcesses)
             {
                 foreach (var p in RunningProcesses)
@@ -43,7 +42,6 @@ class Program
                     }
                 }
             }
-
             Environment.Exit(0);
         };
 
@@ -70,29 +68,24 @@ class Program
                 continue;
             }
 
-            string path = args[i];
-            i++;
-
+            string path = args[i++];
             var argList = new List<string>();
             int? interval = null;
-            string? conn = null, pre = null, storedProc = null, post = null;
+            string? conn = null;
+            var steps = new List<SqlStep>();
 
             while (i < args.Length && !args[i].EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             {
                 string current = args[i];
 
-                if (current.StartsWith("-Interval", StringComparison.OrdinalIgnoreCase))
+                if (current.Equals("-Interval", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
                 {
-                    if (int.TryParse(current.Replace("-Interval", ""), out int val))
+                    if (int.TryParse(args[i + 1], out int val))
+                    {
                         interval = val;
-                    i++;
-                    continue;
-                }
-                if (current == "-RunStoredProcedure" && i + 1 < args.Length)
-                {
-                    storedProc = args[++i];
-                    i++;
-                    continue;
+                        i += 2;
+                        continue;
+                    }
                 }
                 if (current == "-ConnectionString" && i + 1 < args.Length)
                 {
@@ -100,15 +93,15 @@ class Program
                     i++;
                     continue;
                 }
-                if (current == "-Pre" && i + 1 < args.Length)
+                if (current == "-RunStoredProcedure" && i + 1 < args.Length)
                 {
-                    pre = args[++i];
+                    steps.Add(new RunStoredProcedure(args[++i]));
                     i++;
                     continue;
                 }
                 if (current == "-RunSqlCommand" && i + 1 < args.Length)
                 {
-                    post = args[++i];
+                    steps.Add(new RunSqlCommand(args[++i]));
                     i++;
                     continue;
                 }
@@ -117,9 +110,9 @@ class Program
                 i++;
             }
 
-            if (!string.IsNullOrEmpty(storedProc) && !string.IsNullOrEmpty(conn))
+            if (steps.Count > 0 && !string.IsNullOrEmpty(conn))
             {
-                list.Add(new JobAppTask(path, string.Join(" ", argList), interval, conn, pre, storedProc, post));
+                list.Add(new JobAppTask(path, string.Join(" ", argList), interval, conn, steps));
             }
             else
             {
@@ -190,10 +183,25 @@ class Program
 
                 if (app is JobAppTask jobApp)
                 {
-                    LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Executing stored procedure: {jobApp.SqlStoredProcedure}");
                     var jobExecutor = new SqlJobExecutor(jobApp.ConnectionString!);
-                    await jobExecutor.ExecuteJobAsync(jobApp.PreQuery, jobApp.SqlStoredProcedure!, jobApp.SqlCommandAfter);
-                    LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Stored procedure {jobApp.SqlStoredProcedure} completed.");
+                    string exeTag = $"[{Path.GetFileName(app.Path)}]";
+
+                    foreach (var step in jobApp.Steps)
+                    {
+                        switch (step)
+                        {
+                            case RunStoredProcedure sp:
+                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {exeTag} Executing stored procedure: {sp.Name}");
+                                await jobExecutor.ExecuteStoredProcedureAsync(sp.Name);
+                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {exeTag} Stored procedure {sp.Name} executed successfully.");
+                                break;
+                            case RunSqlCommand sql:
+                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {exeTag} Executing SQL command: {sql.Command}");
+                                await jobExecutor.ExecuteSqlCommandAsync(sql.Command);
+                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {exeTag} SQL command executed successfully.");
+                                break;
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -206,7 +214,7 @@ class Program
             {
                 string waitTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 LogToConsoleAndFile($"[{waitTime}] Waiting {app.Interval.Value} minute(s) before next run of {exeNameWithArgs}");
-                await Task.Delay(TimeSpan.FromMinutes(app.Interval.Value));
+                await Task.Delay(TimeSpan.FromSeconds(app.Interval.Value));
             }
 
         } while (app.Interval.HasValue);
@@ -225,7 +233,6 @@ class Program
         }
     }
 }
-
 class SqlJobExecutor
 {
     private readonly string _connectionString;
@@ -234,13 +241,17 @@ class SqlJobExecutor
         _connectionString = connectionString;
     }
 
-    public async Task ExecuteJobAsync(string? preQuery, string jobName, string? postQuery)
+    public async Task ExecuteSqlCommandAsync(string commandText)
     {
         using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
+        await new SqlCommand(commandText, connection).ExecuteNonQueryAsync();
+    }
 
-        if (!string.IsNullOrEmpty(preQuery))
-            await new SqlCommand(preQuery, connection).ExecuteNonQueryAsync();
+    public async Task ExecuteStoredProcedureAsync(string jobName)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
 
         var startJobCmd = new SqlCommand("EXEC msdb.dbo.sp_start_job @job_name", connection);
         startJobCmd.Parameters.AddWithValue("@job_name", jobName);
@@ -259,8 +270,5 @@ class SqlJobExecutor
 
             running = (int)await checkJobCmd.ExecuteScalarAsync() > 0;
         } while (running);
-
-        if (!string.IsNullOrEmpty(postQuery))
-            await new SqlCommand(postQuery, connection).ExecuteNonQueryAsync();
     }
 }

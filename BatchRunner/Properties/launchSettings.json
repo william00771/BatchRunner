@@ -1,7 +1,8 @@
 {
   "profiles": {
     "BatchRunner": {
-      "commandName": "Project"
+      "commandName": "Project",
+      "commandLineArgs": "\"C:\\Users\\willi\\SCANIA\\batchrunner\\ConsoleApp1\\bin\\Debug\\net8.0\\ConsoleApp1.exe\" -Interval5 -ConnectionString \"Server=localhost,9143;Database=Import;User Id=sa;Password=Password??1;Encrypt=True;TrustServerCertificate=True\" -RunSqlCommand \"INSERT INTO [Import].[dbo].[MiCC.Address] ([id], [Address]) VALUES (1, 'TEST');\""
     }
   }
 }
