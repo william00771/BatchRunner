@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "BatchRunner": {
+      "commandName": "Project",
+      "commandLineArgs": "\"\\\\sesoco0175\\sse$\\Master\\Csharp\\ConnectBYOLV2.0\\ConnectBYOLV2.0\\bin\\Debug\\net8.0\\ConnectBYOLV2.0.exe\" \"\\\\Sesoco0175\\sse$\\Master\\Csharp\\connectBYOL\\connectBYOL\\bin\\Release\\connectBYOL.exe\" BudgetRegister -Interval1800 \"\\\\Sesoco0175\\sse$\\Master\\Csharp\\connectBYOL\\connectBYOL\\bin\\Release\\connectBYOL.exe\" WholeCUSTCUSTOMERV3STAGING -Interval3600 \"\\\\Sesoco0175\\sse$\\Master\\Csharp\\connectBYOL\\connectBYOL\\bin\\Release\\connectBYOL.exe\" AssetTransExpStaging -Interval1800"
+    }
+  }
+}
