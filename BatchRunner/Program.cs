@@ -3,7 +3,6 @@ using Microsoft.Data.SqlClient;
 public record AppTask(string Path, string Arguments, int? Interval);
 
 public abstract record SqlStep;
-public record RunStoredProcedure(string Name) : SqlStep;
 public record RunSqlCommand(string Command) : SqlStep;
 
 public record JobAppTask(
@@ -78,24 +77,22 @@ class Program
             {
                 string current = args[i];
 
-                if (current.Equals("-Interval", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                if (current.StartsWith("-Interval", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (int.TryParse(args[i + 1], out int val))
+                    string valStr = current.Equals("-Interval", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length
+                        ? args[i + 1]
+                        : current.Substring("-Interval".Length);
+
+                    if (int.TryParse(valStr, out int val))
                     {
                         interval = val;
-                        i += 2;
+                        i += current.Equals("-Interval", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
                         continue;
                     }
                 }
                 if (current == "-ConnectionString" && i + 1 < args.Length)
                 {
                     conn = args[++i];
-                    i++;
-                    continue;
-                }
-                if (current == "-RunStoredProcedure" && i + 1 < args.Length)
-                {
-                    steps.Add(new RunStoredProcedure(args[++i]));
                     i++;
                     continue;
                 }
@@ -184,21 +181,16 @@ class Program
                 if (app is JobAppTask jobApp)
                 {
                     var jobExecutor = new SqlJobExecutor(jobApp.ConnectionString!);
-                    string exeTag = $"[{Path.GetFileName(app.Path)}]";
+                    string exeTag = $"{Path.GetFileName(app.Path)}";
 
                     foreach (var step in jobApp.Steps)
                     {
                         switch (step)
                         {
-                            case RunStoredProcedure sp:
-                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {exeTag} Executing stored procedure: {sp.Name}");
-                                await jobExecutor.ExecuteStoredProcedureAsync(sp.Name);
-                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {exeTag} Stored procedure {sp.Name} executed successfully.");
-                                break;
                             case RunSqlCommand sql:
-                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {exeTag} Executing SQL command: {sql.Command}");
+                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Executing SQL command: {exeTag} {sql.Command}");
                                 await jobExecutor.ExecuteSqlCommandAsync(sql.Command);
-                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {exeTag} SQL command executed successfully.");
+                                LogToConsoleAndFile($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] SQL command executed successfully: {exeTag} ");
                                 break;
                         }
                     }
@@ -214,7 +206,7 @@ class Program
             {
                 string waitTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 LogToConsoleAndFile($"[{waitTime}] Waiting {app.Interval.Value} minute(s) before next run of {exeNameWithArgs}");
-                await Task.Delay(TimeSpan.FromSeconds(app.Interval.Value));
+                await Task.Delay(TimeSpan.FromMinutes(app.Interval.Value));
             }
 
         } while (app.Interval.HasValue);
@@ -246,29 +238,5 @@ class SqlJobExecutor
         using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
         await new SqlCommand(commandText, connection).ExecuteNonQueryAsync();
-    }
-
-    public async Task ExecuteStoredProcedureAsync(string jobName)
-    {
-        using var connection = new SqlConnection(_connectionString);
-        await connection.OpenAsync();
-
-        var startJobCmd = new SqlCommand("EXEC msdb.dbo.sp_start_job @job_name", connection);
-        startJobCmd.Parameters.AddWithValue("@job_name", jobName);
-        await startJobCmd.ExecuteNonQueryAsync();
-
-        bool running;
-        do
-        {
-            await Task.Delay(3000);
-            var checkJobCmd = new SqlCommand(@"
-                SELECT COUNT(*) 
-                FROM msdb.dbo.sysjobactivity a 
-                JOIN msdb.dbo.sysjobs b ON a.job_id = b.job_id 
-                WHERE b.name = @job_name AND stop_execution_date IS NULL", connection);
-            checkJobCmd.Parameters.AddWithValue("@job_name", jobName);
-
-            running = (int)await checkJobCmd.ExecuteScalarAsync() > 0;
-        } while (running);
     }
 }
