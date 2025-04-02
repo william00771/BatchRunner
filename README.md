@@ -1,6 +1,6 @@
 # BatchRunner
 ## Runs multiple executables at specified intervals, logs output, and optionally executes SQL commands after each run.
-Useful in emergency or fallback scenarios where you need to manually run multiple executables & sql commands in sequence in a sequenced timeinterval
+Useful in emergency or fallback scenarios where you need to manually run multiple executables & sql commands in a sequenced timeinterval
 
 - Supports running multiple .exe files in parallel
 - Custom interval between runs (per executable)
