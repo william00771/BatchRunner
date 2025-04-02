@@ -212,7 +212,7 @@ class Program
         } while (app.Interval.HasValue);
     }
 
-    static void LogToConsoleAndFile(string message)
+    public static void LogToConsoleAndFile(string message)
     {
         Console.WriteLine(message);
         try
@@ -236,7 +236,28 @@ class SqlJobExecutor
     public async Task ExecuteSqlCommandAsync(string commandText)
     {
         using var connection = new SqlConnection(_connectionString);
-        await connection.OpenAsync();
-        await new SqlCommand(commandText, connection).ExecuteNonQueryAsync();
+        try
+        {
+            await connection.OpenAsync();
+            using var cmd = new SqlCommand(commandText, connection);
+            await cmd.ExecuteNonQueryAsync();
+        }
+        catch (SqlException sqlEx)
+        {
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            Program.LogToConsoleAndFile($"[{timestamp}] SQL ERROR executing: {commandText}");
+            foreach (SqlError error in sqlEx.Errors)
+            {
+                Program.LogToConsoleAndFile($"[{timestamp}] SQL ERROR {error.Number}: {error.Message}");
+            }
+            throw;
+        }
+        catch (Exception ex)
+        {
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            Program.LogToConsoleAndFile($"[{timestamp}] GENERAL ERROR executing SQL command: {commandText}");
+            Program.LogToConsoleAndFile($"[{timestamp}] Exception: {ex.Message}");
+            throw;
+        }
     }
 }
