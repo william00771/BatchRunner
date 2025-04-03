@@ -20,5 +20,5 @@ BatchRunner.exe "..\FADTAPIToDW.exe" -Interval 5 -ConnectionString "Server=.;Dat
 
 Change connection string between SQL queries
 ```bash
-BatchRunner.exe "..\FADTAPIToDW.exe" -Interval 30 -ConnectionString "Server=server1;Database=dsz;Trusted_Connection=True;" -RunSqlCommand "DELETE * FROM dbo.FADT" "Server=server2;Database=lso24;Trusted_Connection=True;" -RunSqlCommand "EXEC dbo.initFADT" -ConnectionString "Server=server3;Database=temp;Trusted_Connection=True;" -RunSqlCommand "exec [dbo].[createTemp]"
+BatchRunner.exe "..\FADTAPIToDW.exe" -Interval 30 -ConnectionString "Server=server1;Database=dsz;Trusted_Connection=True;" -RunSqlCommand "DELETE * FROM dbo.FADT" -ConnectionString "Server=server2;Database=lso24;Trusted_Connection=True;" -RunSqlCommand "EXEC dbo.initFADT" -ConnectionString "Server=server3;Database=temp;Trusted_Connection=True;" -RunSqlCommand "exec [dbo].[createTemp]"
 ```
