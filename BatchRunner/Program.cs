@@ -60,7 +60,7 @@ class Program
             string path = args[i++];
             var argList = new List<string>();
             int? interval = null;
-            string? conn = null;
+            string? currentConn = null;
             var steps = new List<SqlStep>();
 
             while (i < args.Length && !args[i].EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
@@ -83,14 +83,17 @@ class Program
 
                 if (current == "-ConnectionString" && i + 1 < args.Length)
                 {
-                    conn = args[++i];
+                    currentConn = args[++i];
                     i++;
                     continue;
                 }
 
                 if (current == "-RunSqlCommand" && i + 1 < args.Length)
                 {
-                    steps.Add(new RunSqlCommand(args[++i]));
+                    if (string.IsNullOrWhiteSpace(currentConn))
+                        throw new Exception("You must specify -ConnectionString before -RunSqlCommand.");
+
+                    steps.Add(new RunSqlCommand(args[++i], currentConn));
                     i++;
                     continue;
                 }
@@ -99,14 +102,10 @@ class Program
                 i++;
             }
 
-            if (steps.Count > 0 && !string.IsNullOrEmpty(conn))
-            {
-                list.Add(new JobAppTask(path, string.Join(" ", argList), interval, conn, steps));
-            }
+            if (steps.Count > 0)
+                list.Add(new JobAppTask(path, string.Join(" ", argList), interval, steps));
             else
-            {
                 list.Add(new AppTask(path, string.Join(" ", argList), interval));
-            }
         }
 
         return list;
@@ -171,14 +170,13 @@ class Program
 
                 if (app is JobAppTask jobApp)
                 {
-                    var jobExecutor = new SqlJobExecutor(jobApp.ConnectionString!);
-
                     foreach (var step in jobApp.Steps)
                     {
                         if (step is RunSqlCommand sql)
                         {
+                            var executor = new SqlJobExecutor(sql.ConnectionString);
                             Logger.Log($"Executing SQL command {exeName}: {sql.Command}");
-                            await jobExecutor.ExecuteSqlCommandAsync(sql.Command);
+                            await executor.ExecuteSqlCommandAsync(sql.Command);
                             Logger.Log($"SQL command executed successfully {exeName}");
                         }
                     }
